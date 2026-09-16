@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<!-- viewport : bloque le zoom natif du navigateur pour ne pas interférer avec notre zoom custom -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Plan interactif</title>
+<style>
+/* Reset complet : pas de marges, pas de scroll */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; }
+body {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background: #0a0a0f; color: #e2e8f0;
+  /* Désactive la sélection de texte + le scroll tactile natif */
+  -webkit-user-select: none; user-select: none;
+  touch-action: none;
+}
+
+/* Zone principale du plan : occupe tout l'espace sauf la barre d'info (64px en bas) */
+#planZone {
+  position: absolute; top: 0; left: 0;
+  width: 100%; bottom: 64px;
+  overflow: hidden; background: #0a0a0f;
+}
+
+/* Wrapper du SVG : déplacé via transform CSS pour le pan/zoom */
+#svgW {
+  position: absolute; top: 0; left: 0;
+  transform-origin: 0 0; /* ancré en haut à gauche pour des calculs simples */
+}
+
+/* Le SVG lui-même */
+#svgW svg { display: block; background: transparent !important; }
+
+/* Désactive les clics sur tous les éléments SVG SAUF les pièces */
+#svgW svg * { pointer-events: none !important; }
+#svgW svg .piece-zone {
+  pointer-events: all !important; cursor: pointer !important;
+}
+
+/* Barre d'information en bas : affiche les infos de la pièce sélectionnée */
+.info-bar {
+  position: absolute; bottom: 0; left: 0; right: 0; z-index: 10;
+  background: #161622; border-top: 1px solid #252540;
+  padding: 14px 20px; height: 64px;
+  display: flex; align-items: center; gap: 12px;
+}
+.info-dot { width: 12px; height: 12px; border-radius: 50%; background: #22c55e; flex-shrink: 0; }
+.info-name { color: #22c55e; font-size: 17px; font-weight: 700; }
+.info-detail { color: #64748b; font-size: 13px; }
+.info-hint { color: #475569; font-size: 14px; text-align: center; width: 100%; }
+
+/* Barre d'outils : zoom +, zoom -, reset, pourcentage */
+.toolbar {
+  position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%); z-index: 10;
+  display: flex; gap: 6px; background: rgba(22,22,34,0.85); padding: 6px 14px;
+  border-radius: 20px; border: 1px solid #252540;
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}
+.toolbar button {
+  background: #252540; border: none; color: #e2e8f0;
+  width: 36px; height: 36px; border-radius: 10px; cursor: pointer;
+  font-size: 18px; display: flex; align-items: center; justify-content: center;
+}
+.toolbar button:active { background: #ffd700; color: #000; }
+#zoomLbl { color: #64748b; font-size: 12px; display: flex; align-items: center; padding: 0 6px; }
+</style>
+</head>
+<body>
+<!-- Zone du plan : contient le SVG + la toolbar -->
+<div id="planZone">
+  <!-- %%SVG%% = remplacé par le SVG complet lors de la génération -->
+  <div id="svgW">%%SVG%%</div>
+  <div class="toolbar">
+    <button id="btnIn">+</button>
+    <button id="btnOut">−</button>
+    <span id="zoomLbl">100%</span>
+    <button id="btnReset">⟲</button>
+  </div>
+</div>
+
+<!-- Barre d'info fixe en bas : hint par défaut, infos pièce si sélectionnée -->
+<div class="info-bar">
+  <span class="info-hint" id="infoHint">Tapez sur une pièce pour l'identifier</span>
+  <div id="infoSelected" style="display:none;align-items:center;gap:12px;width:100%">
+    <span class="info-dot"></span>
+    <div>
+      <div class="info-name" id="infoName"></div>
+      <div class="info-detail" id="infoDetail"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// %%ROOMS%% = remplacé par les données JSON des pièces lors de la génération
+var ROOMS = %%ROOMS%%;
+
+// Récupération des éléments DOM principaux
+var planZone = document.getElementById('planZone');
+var svgW     = document.getElementById('svgW');
+var svgEl    = svgW.querySelector('svg');
+var infoHint     = document.getElementById('infoHint');
+var infoSelected = document.getElementById('infoSelected');
+var infoName     = document.getElementById('infoName');
+var infoDetail   = document.getElementById('infoDetail');
+
+// Récupère les dimensions d'affichage du SVG (width/height natifs, pas le viewBox)
+// Ces valeurs sont utilisées pour le calcul du fit initial
+var pxW = svgEl.getAttribute('width');
+var pxH = svgEl.getAttribute('height');
+if (!pxW || !pxH) {
+  // Fallback si pas de width/height : utilise le viewBox
+  var vb = (svgEl.getAttribute('viewBox') || '0 0 1000 500').split(' ').map(Number);
+  pxW = vb[2]; pxH = vb[3];
+}
+pxW = parseFloat(pxW) || 1000;
+pxH = parseFloat(pxH) || 500;
+
+// État du zoom/pan : scale (échelle), tx/ty (translation)
+var scale = 1, tx = 0, ty = 0;
+var selectedRoom = null; // index de la pièce sélectionnée, null = aucune
+
+// ============================================================
+// Mapping : ID SVG → index dans ROOMS
+// Certaines pièces ont plusieurs IDs SVG (svgElementIds pour les groupes)
+// ============================================================
+var idToRoom = {};
+ROOMS.forEach(function(room, idx) {
+  var ids = room.svgElementIds || [room.svgElementId];
+  ids.forEach(function(sid) { idToRoom[sid] = idx; });
+});
+
+// ============================================================
+// Initialisation des pièces interactives
+// Rend chaque élément SVG de pièce quasi-transparent et cliquable
+// ============================================================
+var found = 0;
+ROOMS.forEach(function(room) {
+  var ids = room.svgElementIds || [room.svgElementId];
+  ids.forEach(function(sid) {
+    var el = document.getElementById(sid);
+    if (!el) return;
+    found++;
+    // Remplissage quasi-transparent pour capter les clics sans cacher le plan
+    el.style.fill = 'rgba(0,0,0,0.01)';
+    el.style.stroke = 'rgba(0,0,0,0.01)';
+    el.setAttribute('stroke-width', '2500');
+    // La classe CSS réactive les pointer-events
+    el.classList.add('piece-zone');
+  });
+});
+
+// ============================================================
+// Gestion du clic sur le SVG
+// ============================================================
+svgEl.addEventListener('click', function(e) {
+  var t = e.target;
+  // Si on clique sur autre chose qu'une pièce → désélection
+  if (!t.classList || !t.classList.contains('piece-zone')) { deselectRoom(); return; }
+  // Récupère l'ID SVG pour trouver la pièce correspondante
+  var sid = t.id || t.getAttribute('id');
+  if (sid && idToRoom[sid] !== undefined) selectRoom(idToRoom[sid]);
+});
+
+// Sélectionne une pièce : la colore en vert + affiche les infos dans la barre
+function selectRoom(idx) {
+  deselectRoom(); // désélectionne l'ancienne d'abord
+  selectedRoom = idx;
+  var room = ROOMS[idx];
+  var ids = room.svgElementIds || [room.svgElementId];
+  ids.forEach(function(sid) {
+    var el = document.getElementById(sid);
+    if (el) {
+      el.style.fill = '#22c55e44';
+      el.style.stroke = '#22c55e';
+      el.setAttribute('stroke-width', '3500');
+    }
+  });
+  // Bascule l'affichage : masque le hint, montre les infos
+  infoHint.style.display = 'none';
+  infoSelected.style.display = 'flex';
+  infoName.textContent = room.name;
+  infoDetail.textContent = 'Type : ' + (room.type || '-') + '  |  Surface : ' + (room.area || 'N/D');
+}
+
+// Désélectionne la pièce courante : restaure l'état quasi-transparent
+function deselectRoom() {
+  if (selectedRoom === null) return;
+  var room = ROOMS[selectedRoom];
+  var ids = room.svgElementIds || [room.svgElementId];
+  ids.forEach(function(sid) {
+    var el = document.getElementById(sid);
+    if (el) {
+      el.style.fill = 'rgba(0,0,0,0.01)';
+      el.style.stroke = 'rgba(0,0,0,0.01)';
+      el.setAttribute('stroke-width', '2500');
+    }
+  });
+  selectedRoom = null;
+  infoHint.style.display = 'block';
+  infoSelected.style.display = 'none';
+}
+
+// ============================================================
+// Applique la transformation CSS (translate + scale) au wrapper SVG
+// anim = true → animation fluide, false → instantané
+// ============================================================
+function applyTransform(anim) {
+  svgW.style.transition = anim ? 'transform 0.25s ease' : 'none';
+  svgW.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')';
+  document.getElementById('zoomLbl').textContent = Math.round(scale * 100) + '%';
+}
+
+// ============================================================
+// Fit to screen : calcule l'échelle pour que le plan remplisse
+// la zone disponible, puis le centre
+// ============================================================
+function resetView() {
+  var pw = planZone.clientWidth || window.innerWidth;
+  var ph = (planZone.clientHeight || window.innerHeight - 64) - 4;
+  // Ratio d'échelle : le plus petit des deux pour que tout soit visible
+  var sx = pw / pxW, sy = ph / pxH;
+  scale = Math.min(sx, sy) * 0.95; // 5% de marge
+  // Centre le plan
+  tx = (pw - pxW * scale) / 2;
+  ty = (ph - pxH * scale) / 2;
+  applyTransform(true);
+}
+
+// ============================================================
+// Pan au clavier/souris (desktop)
+// ============================================================
+var dragging = false, dragX, dragY;
+planZone.addEventListener('mousedown', function(e) {
+  // Ne pas déclencher le pan si on clique sur une pièce
+  if (e.target.classList && e.target.classList.contains('piece-zone')) return;
+  dragging = true;
+  dragX = e.clientX - tx;
+  dragY = e.clientY - ty;
+});
+window.addEventListener('mousemove', function(e) {
+  if (!dragging) return;
+  tx = e.clientX - dragX;
+  ty = e.clientY - dragY;
+  applyTransform(false);
+});
+window.addEventListener('mouseup', function() { dragging = false; });
+
+// ============================================================
+// Gestes tactiles : pan (1 doigt) + pinch-to-zoom (2 doigts)
+// ============================================================
+var tStart = null;       // point de départ du touch à 1 doigt
+var pinchD = 0;          // distance initiale entre les 2 doigts
+var pinchScale, pinchTx, pinchTy; // état sauvegardé au début du pinch
+
+planZone.addEventListener('touchstart', function(e) {
+  if (e.touches.length === 1) {
+    // Début d'un pan : on mémorise la position du doigt et l'état courant
+    tStart = {
+      x: e.touches[0].clientX,
+      y: e.touches[0].clientY,
+      tx: tx,
+      ty: ty
+    };
+  } else if (e.touches.length === 2) {
+    // Début d'un pinch : on calcule la distance entre les 2 doigts
+    var dx = e.touches[0].clientX - e.touches[1].clientX;
+    var dy = e.touches[0].clientY - e.touches[1].clientY;
+    pinchD = Math.sqrt(dx * dx + dy * dy);
+    pinchScale = scale;
+    pinchTx = tx;
+    pinchTy = ty;
+    tStart = null; // annule le pan en cours
+  }
+});
+
+planZone.addEventListener('touchmove', function(e) {
+  e.preventDefault(); // empêche le scroll natif
+  if (e.touches.length === 1 && tStart) {
+    // Pan : déplace le plan selon le mouvement du doigt
+    tx = tStart.tx + (e.touches[0].clientX - tStart.x);
+    ty = tStart.ty + (e.touches[0].clientY - tStart.y);
+    applyTransform(false);
+  } else if (e.touches.length === 2 && pinchD > 0) {
+    // Pinch-to-zoom : recalcule l'échelle proportionnellement à la distance
+    var dx = e.touches[0].clientX - e.touches[1].clientX;
+    var dy = e.touches[0].clientY - e.touches[1].clientY;
+    var d = Math.sqrt(dx * dx + dy * dy);
+    // Nouvelle échelle, limitée entre 10% et 1500%
+    var ns = Math.max(0.1, Math.min(15, pinchScale * (d / pinchD)));
+    // Centre du pinch (point de zoom)
+    var cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+    var cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    // Ajuste la translation pour que le zoom soit centré sur le pinch
+    var sf = ns / scale;
+    tx = cx - sf * (cx - tx);
+    ty = cy - sf * (cy - ty);
+    scale = ns;
+    applyTransform(false);
+  }
+}, { passive: false });
+
+planZone.addEventListener('touchend', function(e) {
+  if (e.touches.length === 0) tStart = null;
+});
+
+// ============================================================
+// Boutons de la toolbar
+// ============================================================
+
+// Zoom + : augmente de 30% centré sur le milieu de l'écran
+document.getElementById('btnIn').addEventListener('click', function() {
+  var c = planZone.getBoundingClientRect();
+  var cx = c.width / 2, cy = c.height / 2;
+  var ns = Math.min(15, scale * 1.3);
+  var sf = ns / scale;
+  tx = cx - sf * (cx - tx);
+  ty = cy - sf * (cy - ty);
+  scale = ns;
+  applyTransform(true);
+});
+
+// Zoom - : réduit de 30% centré sur le milieu de l'écran
+document.getElementById('btnOut').addEventListener('click', function() {
+  var c = planZone.getBoundingClientRect();
+  var cx = c.width / 2, cy = c.height / 2;
+  var ns = Math.max(0.1, scale * 0.7);
+  var sf = ns / scale;
+  tx = cx - sf * (cx - tx);
+  ty = cy - sf * (cy - ty);
+  scale = ns;
+  applyTransform(true);
+});
+
+// Reset : retour à la vue fit-to-screen
+document.getElementById('btnReset').addEventListener('click', resetView);
+
+// Initialisation différée (100ms) pour laisser le DOM se mettre en place dans le WebView
+setTimeout(resetView, 100);
+</script>
+</body>
+</html>

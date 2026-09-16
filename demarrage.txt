@@ -1,0 +1,13 @@
+=== LANCEMENT DE L'APPLI MAINTJOJO ===
+
+1. Démarrer le serveur Express + tunnel Tailscale
+   Terminal 1 :
+   cd ~/Bureau/Maintjojo/serveur && bash start.sh
+   (ou : node index.js && tailscale funnel --bg 3000)
+
+2. Lancer l'app Expo
+   Terminal 2 :
+   cd ~/Bureau/Maintjojo && npx expo start
+   → Scanner le QR code avec l'app Expo Go sur le téléphone
+
+L'URL du serveur est fixe : https://maintjojo-serveur.tailce5b78.ts.net

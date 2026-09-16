@@ -1,0 +1,22 @@
+{
+  "name": "maintjojo-serveur",
+  "version": "1.0.0",
+  "description": "Serveur de stockage des interventions MaintJojo",
+  "main": "index.js",
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "cheerio": "^1.2.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "express": "^4.21.0",
+    "express-rate-limit": "^8.7.0",
+    "helmet": "^8.3.0",
+    "multer": "^2.4.0",
+    "nodemailer": "^10.0.10",
+    "pdfkit": "^0.18.0",
+    "uuid": "^14.0.2"
+  },
+  "scripts": {
+    "start": "node index.js"
+  }
+}
