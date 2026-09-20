@@ -2,29 +2,38 @@ import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, Text, View, FlatList, TouchableOpacity, ActivityIndicator, SafeAreaView } from 'react-native';
 import { useState, useEffect, useCallback } from 'react';
 import { useFonts, ArchivoBlack_400Regular } from '@expo-google-fonts/archivo-black';
-import { recupererInterventions } from '../services/api';
+import { recupererInterventions, recupererInterventionsParAbyla } from '../services/api';
 import { COLORS, SPACING, RADIUS, SHADOWS } from '../theme';
 
-export default function ListeInterventionsScreen({ navigation }) {
+export default function ListeInterventionsScreen({ navigation, route }) {
   const [fontsLoaded] = useFonts({ ArchivoBlack_400Regular });
   const [interventions, setInterventions] = useState([]);
   const [chargement, setChargement] = useState(true);
   const [erreur, setErreur] = useState(null);
 
+  // Si un n° Abyla est passé en paramètre, on affiche l'historique de cette pièce
+  const abyla = route.params?.abyla;
+  const titre = route.params?.titre || 'Mes interventions';
+
   const chargerInterventions = useCallback(async () => {
     try {
       setChargement(true);
       setErreur(null);
-      const donnees = await recupererInterventions();
+      const donnees = abyla
+        ? await recupererInterventionsParAbyla(abyla)
+        : await recupererInterventions();
       setInterventions(donnees);
     } catch (e) {
       setErreur(e.message);
     } finally {
       setChargement(false);
     }
-  }, []);
+  }, [abyla]);
 
   useEffect(() => { chargerInterventions(); }, [chargerInterventions]);
+  useEffect(() => {
+    if (route.params?.titre) navigation.setOptions({ title: route.params.titre });
+  }, [navigation, route.params?.titre]);
   useEffect(() => {
     const unsub = navigation.addListener('focus', () => chargerInterventions());
     return unsub;
@@ -68,7 +77,7 @@ export default function ListeInterventionsScreen({ navigation }) {
         keyExtractor={(item) => item.id.toString()}
         contentContainerStyle={styles.listContent}
         ListHeaderComponent={
-          <Text style={styles.pageTitle}>Mes interventions</Text>
+          <Text style={styles.pageTitle}>{titre}</Text>
         }
         ListEmptyComponent={
           <View style={styles.emptyWrap}>

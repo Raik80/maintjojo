@@ -144,6 +144,15 @@ async function genererPDF(intervention, photos, accuseToken) {
       if (intervention.entree && intervention.entree !== 'Non spécifié') {
         infos.push(['Entrée', intervention.entree]);
       }
+      if (intervention.telephone) {
+        infos.push(['Téléphone', intervention.telephone]);
+      }
+      if (intervention.personne) {
+        infos.push(['Nom', intervention.personne]);
+      }
+      if (intervention.abyla) {
+        infos.push(['N° Abyla', intervention.abyla]);
+      }
       infos.push(
         ['Statut', intervention.statut === 'terminé' ? 'Terminé' : 'En cours'],
         ['Date de création', intervention.date_creation || 'Non spécifiée'],

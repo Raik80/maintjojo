@@ -36,6 +36,9 @@ db.exec(`
     batiment TEXT NOT NULL DEFAULT 'Non spécifié',
     etage TEXT NOT NULL DEFAULT 'Non spécifié',
     entree TEXT NOT NULL DEFAULT 'Non spécifié',
+    telephone TEXT NOT NULL DEFAULT '',
+    personne TEXT NOT NULL DEFAULT '',
+    abyla TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
     statut TEXT NOT NULL DEFAULT 'en cours',
     resolution TEXT NOT NULL DEFAULT '',
@@ -46,6 +49,12 @@ db.exec(`
 // Migration : ajout des colonnes statut et resolution si elles n'existent pas
 try { db.exec(`ALTER TABLE interventions ADD COLUMN statut TEXT NOT NULL DEFAULT 'en cours'`); } catch (e) {}
 try { db.exec(`ALTER TABLE interventions ADD COLUMN resolution TEXT NOT NULL DEFAULT ''`); } catch (e) {}
+// Migration : ajout de la colonne telephone (numéro de poste) si elle n'existe pas
+try { db.exec(`ALTER TABLE interventions ADD COLUMN telephone TEXT NOT NULL DEFAULT ''`); } catch (e) {}
+// Migration : ajout de la colonne personne (nom associé au poste) si elle n'existe pas
+try { db.exec(`ALTER TABLE interventions ADD COLUMN personne TEXT NOT NULL DEFAULT ''`); } catch (e) {}
+// Migration : ajout de la colonne abyla (numéro de pièce affiché sur les portes) si elle n'existe pas
+try { db.exec(`ALTER TABLE interventions ADD COLUMN abyla TEXT NOT NULL DEFAULT ''`); } catch (e) {}
 
 // Création de la table photos pour stocker les images liées aux interventions
 // Chaque photo est liée à une intervention via intervention_id (clé étrangère)
@@ -129,8 +138,8 @@ db.exec(`
 
 // Préparation des requêtes SQL pour de meilleures performances
 const insertStmt = db.prepare(`
-  INSERT INTO interventions (type, batiment, etage, entree, description)
-  VALUES (@type, @batiment, @etage, @entree, @description)
+  INSERT INTO interventions (type, batiment, etage, entree, telephone, personne, description)
+  VALUES (@type, @batiment, @etage, @entree, @telephone, @personne, @description)
 `);
 
 const getAllStmt = db.prepare('SELECT * FROM interventions ORDER BY date_creation DESC');
@@ -141,7 +150,7 @@ const deleteStmt = db.prepare('DELETE FROM interventions WHERE id = ?');
 
 const updateStmt = db.prepare(`
   UPDATE interventions SET type = @type, batiment = @batiment, etage = @etage,
-  entree = @entree, description = @description WHERE id = @id
+  entree = @entree, telephone = @telephone, personne = @personne, description = @description WHERE id = @id
 `);
 
 // Fonction pour ajouter une intervention
@@ -151,6 +160,8 @@ function ajouterIntervention(fiche) {
     batiment: fiche.batiment,
     etage: fiche.etage,
     entree: fiche.entree,
+    telephone: fiche.telephone || '',
+    personne: fiche.personne || '',
     description: fiche.description,
   });
   return resultat.lastInsertRowid; // Retourne l'ID de l'intervention créée
@@ -180,9 +191,25 @@ function modifierIntervention(id, fiche) {
     batiment: fiche.batiment,
     etage: fiche.etage,
     entree: fiche.entree,
+    telephone: fiche.telephone || '',
+    personne: fiche.personne || '',
     description: fiche.description,
   });
   return resultat.changes > 0; // Retourne true si la modification a été effectuée
+}
+
+// Met à jour uniquement le numéro Abyla (pièce) d'une intervention
+function mettreAJourAbyla(id, abyla) {
+  const resultat = db.prepare('UPDATE interventions SET abyla = @abyla WHERE id = @id').run({
+    id,
+    abyla: abyla || '',
+  });
+  return resultat.changes > 0;
+}
+
+// Récupère toutes les interventions liées à une pièce (numéro Abyla), les plus récentes d'abord
+function recupererInterventionsParAbyla(abyla) {
+  return db.prepare('SELECT * FROM interventions WHERE abyla = ? ORDER BY date_creation DESC').all(abyla);
 }
 
 // Ajoute une photo à une intervention dans la base de données
@@ -547,6 +574,8 @@ module.exports = {
   supprimerIntervention,
   modifierIntervention,
   terminerIntervention,
+  mettreAJourAbyla,
+  recupererInterventionsParAbyla,
   ajouterPhoto,
   recupererPhotos,
   recupererPhotoParId,

@@ -3,7 +3,7 @@ import { StyleSheet, Text, View, ScrollView, TouchableOpacity, TextInput, Activi
 import { Image } from 'expo-image';
 import { useState, useEffect, useRef } from 'react';
 import * as ImagePicker from 'expo-image-picker';
-import { envoyerIntervention, supprimerIntervention, terminerIntervention, envoyerRapportParMail, uploadPhoto, fetchPhotos, deletePhoto, BASE_URL, API_KEY, recupererStatutAccuse } from '../services/api';
+import { envoyerIntervention, supprimerIntervention, terminerIntervention, envoyerRapportParMail, uploadPhoto, fetchPhotos, deletePhoto, BASE_URL, API_KEY, recupererStatutAccuse, rechercherAnnuaireParPoste, modifierAbyla, recupererInterventionsParAbyla } from '../services/api';
 import ConfirmationModal from '../components/ConfirmationModal';
 import { COLORS, SPACING, RADIUS, SHADOWS } from '../theme';
 
@@ -22,10 +22,33 @@ export default function FicheInterventionScreen({ route, navigation }) {
   const [accuse, setAccuse] = useState(null);
   const [photos, setPhotos] = useState([]);
   const [photosChargement, setPhotosChargement] = useState(false);
+  const [personne, setPersonne] = useState(fiche.personne || '');
+  const [optionsPersonne, setOptionsPersonne] = useState([]);
+  const [recherchePersonne, setRecherchePersonne] = useState(false);
+  const [abyla, setAbyla] = useState(fiche.abyla || '');
+  const [editionAbyla, setEditionAbyla] = useState(false);
+  const [valeurAbyla, setValeurAbyla] = useState(fiche.abyla || '');
+  const [sauvegardeAbyla, setSauvegardeAbyla] = useState(false);
+  const [nbHistorique, setNbHistorique] = useState(null);
 
   useEffect(() => {
     if (nonSauvegarde) setPhotos(photosLocale);
     else if (fiche.id) chargerPhotos();
+  }, []);
+
+  // Résolution du nom via l'annuaire UL à partir du poste téléphonique
+  useEffect(() => {
+    if (personne || !fiche.telephone) return;
+    let actif = true;
+    setRecherchePersonne(true);
+    rechercherAnnuaireParPoste(fiche.telephone)
+      .then(({ personnes }) => {
+        if (!actif) return;
+        if (personnes.length === 1) setPersonne(personnes[0]);
+        else if (personnes.length > 1) setOptionsPersonne(personnes);
+      })
+      .finally(() => { if (actif) setRecherchePersonne(false); });
+    return () => { actif = false; };
   }, []);
 
   useEffect(() => {
@@ -36,6 +59,16 @@ export default function FicheInterventionScreen({ route, navigation }) {
       });
     }
   }, []);
+
+  // Nombre d'interventions liées à la même pièce (n° Abyla)
+  useEffect(() => {
+    if (nonSauvegarde || !abyla) { setNbHistorique(null); return; }
+    let actif = true;
+    recupererInterventionsParAbyla(abyla)
+      .then(liste => { if (actif) setNbHistorique(Array.isArray(liste) ? liste.length : null); })
+      .catch(() => { if (actif) setNbHistorique(null); });
+    return () => { actif = false; };
+  }, [abyla, nonSauvegarde]);
 
   useEffect(() => {
     if (!envoiRapport.fait || accuse?.confirme) return;
@@ -55,7 +88,7 @@ export default function FicheInterventionScreen({ route, navigation }) {
   async function handleSauvegarder() {
     try {
       setSauvegarde({ enCours: true, faite: false, erreur: null });
-      const cree = await envoyerIntervention(fiche);
+      const cree = await envoyerIntervention({ ...fiche, personne });
       if (photosLocale.length > 0) for (const p of photosLocale) await uploadPhoto(cree.id, p.uri, p.description);
       setSauvegarde({ enCours: false, faite: true, erreur: null });
       setTimeout(() => navigation.reset({ index: 1, routes: [{ name: 'Accueil' }, { name: 'ListeInterventions' }] }), 1000);
@@ -93,6 +126,20 @@ export default function FicheInterventionScreen({ route, navigation }) {
     catch (e) { Alert.alert('Erreur', 'Suppression impossible.'); }
   }
 
+  async function handleSauvegarderAbyla() {
+    const valeur = valeurAbyla.trim();
+    try {
+      setSauvegardeAbyla(true);
+      await modifierAbyla(fiche.id, valeur);
+      setAbyla(valeur);
+      setEditionAbyla(false);
+      setSauvegardeAbyla(false);
+    } catch (e) {
+      setSauvegardeAbyla(false);
+      Alert.alert('Erreur', e.message || 'Enregistrement impossible.');
+    }
+  }
+
   return (
     <View style={styles.screen}>
       <StatusBar style="light" />
@@ -116,6 +163,76 @@ export default function FicheInterventionScreen({ route, navigation }) {
               <Text style={styles.value}>{fiche.etage}</Text>
             </View>
             {fiche.entree !== 'Non spécifié' && <><View style={styles.divider} /><View style={styles.field}><Text style={styles.label}>Entrée</Text><Text style={styles.value}>{fiche.entree}</Text></View></>}
+            {fiche.type === 'Téléphonie' && (
+              <>
+                <View style={styles.divider} />
+                <View style={styles.field}>
+                  <Text style={styles.label}>Téléphone</Text>
+                  <Text style={styles.value}>{fiche.telephone || 'Non spécifié'}</Text>
+                </View>
+                <View style={styles.divider} />
+                <View style={styles.field}>
+                  <Text style={styles.label}>Nom</Text>
+                  {recherchePersonne ? (
+                    <Text style={styles.value}>Recherche…</Text>
+                  ) : personne ? (
+                    <Text style={styles.value}>{personne}</Text>
+                  ) : optionsPersonne.length > 1 ? (
+                    <View style={styles.choixWrap}>
+                      {optionsPersonne.map((nom) => (
+                        <TouchableOpacity key={nom} style={styles.choixBtn} onPress={() => { setPersonne(nom); setOptionsPersonne([]); }}>
+                          <Text style={styles.choixText}>{nom}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  ) : (
+                    <Text style={styles.value}>Non spécifié</Text>
+                  )}
+                </View>
+              </>
+            )}
+            {!nonSauvegarde && (
+              <>
+                <View style={styles.divider} />
+                <View style={styles.field}>
+                  <Text style={styles.label}>N° Abyla (pièce)</Text>
+                  {editionAbyla ? (
+                    <View style={styles.abylaEdit}>
+                      <TextInput
+                        style={styles.abylaInput}
+                        value={valeurAbyla}
+                        onChangeText={setValeurAbyla}
+                        placeholder="Ex: 45043"
+                        placeholderTextColor={COLORS.textDim}
+                        keyboardType="numeric"
+                        autoFocus
+                      />
+                      <TouchableOpacity style={styles.abylaValider} onPress={handleSauvegarderAbyla} disabled={sauvegardeAbyla}>
+                        {sauvegardeAbyla ? <ActivityIndicator color={COLORS.black} size="small" /> : <Text style={styles.abylaValiderText}>Valider</Text>}
+                      </TouchableOpacity>
+                      <TouchableOpacity style={styles.abylaAnnuler} onPress={() => { setEditionAbyla(false); setValeurAbyla(abyla); }} disabled={sauvegardeAbyla}>
+                        <Text style={styles.abylaAnnulerText}>Annuler</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <View style={styles.abylaRow}>
+                      <Text style={styles.value}>{abyla || 'Non spécifié'}</Text>
+                      <TouchableOpacity style={styles.abylaIcon} onPress={() => { setValeurAbyla(abyla); setEditionAbyla(true); }}>
+                        <Text style={styles.abylaIconText}>✏️</Text>
+                      </TouchableOpacity>
+                      {abyla ? (
+                        <TouchableOpacity
+                          style={styles.abylaHisto}
+                          onPress={() => navigation.navigate('ListeInterventions', { abyla, titre: `Historique · pièce ${abyla}` })}
+                        >
+                          <Text style={styles.abylaHistoText}>🕘 Historique{nbHistorique != null ? ` (${nbHistorique})` : ''}</Text>
+                        </TouchableOpacity>
+                      ) : null}
+                    </View>
+                  )}
+                </View>
+              </>
+            )}
             {!nonSauvegarde && <><View style={styles.divider} /><View style={styles.field}><Text style={styles.label}>Statut</Text><Text style={[styles.value, estTerminee ? styles.textSuccess : styles.textGold]}>{estTerminee ? 'Terminé' : 'En cours'}</Text></View></>}
           </View>
 
@@ -231,6 +348,20 @@ const styles = StyleSheet.create({
   value: { color: COLORS.text, fontSize: 16, fontWeight: '700', marginTop: 3 },
   textSuccess: { color: COLORS.green },
   textGold: { color: COLORS.gold },
+  choixWrap: { marginTop: SPACING.sm, gap: SPACING.sm },
+  choixBtn: { paddingVertical: 10, paddingHorizontal: SPACING.lg, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.gold, alignSelf: 'flex-start' },
+  choixText: { color: COLORS.gold, fontSize: 15, fontWeight: '700' },
+  abylaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 3 },
+  abylaIcon: { paddingHorizontal: SPACING.sm, paddingVertical: 2 },
+  abylaIconText: { fontSize: 16 },
+  abylaHisto: { marginLeft: SPACING.sm, paddingVertical: 4, paddingHorizontal: SPACING.md, borderRadius: RADIUS.full, borderWidth: 1, borderColor: COLORS.gold },
+  abylaHistoText: { color: COLORS.gold, fontSize: 13, fontWeight: '700' },
+  abylaEdit: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm, marginTop: SPACING.sm },
+  abylaInput: { flex: 1, backgroundColor: COLORS.input, color: COLORS.text, fontSize: 15, borderRadius: RADIUS.sm, paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, borderWidth: 1, borderColor: COLORS.gold + '60' },
+  abylaValider: { backgroundColor: COLORS.green, paddingVertical: SPACING.sm, paddingHorizontal: SPACING.lg, borderRadius: RADIUS.full, minWidth: 80, alignItems: 'center' },
+  abylaValiderText: { color: COLORS.black, fontSize: 14, fontWeight: '700' },
+  abylaAnnuler: { paddingVertical: SPACING.sm, paddingHorizontal: SPACING.md, borderRadius: RADIUS.full, borderWidth: 1, borderColor: COLORS.cardBorder },
+  abylaAnnulerText: { color: COLORS.textMuted, fontSize: 14, fontWeight: '600' },
   divider: { height: 1, backgroundColor: COLORS.cardBorder, marginVertical: SPACING.xs },
   sectionTitle: { color: COLORS.gold, fontSize: 17, fontWeight: '700', alignSelf: 'flex-start', marginBottom: SPACING.md, marginTop: SPACING.md },
   descCard: { width: '100%', backgroundColor: COLORS.card, borderRadius: RADIUS.md, padding: SPACING.lg, borderWidth: 1, borderColor: COLORS.cardBorder, marginBottom: SPACING.xxl },

@@ -30,6 +30,8 @@ const {
   supprimerIntervention,
   modifierIntervention,
   terminerIntervention,
+  mettreAJourAbyla,
+  recupererInterventionsParAbyla,
   ajouterPhoto,
   recupererPhotos,
   recupererPhotoParId,
@@ -58,6 +60,8 @@ const {
 } = require('./database');
 // Service de génération de PDF et d'envoi par email (SMTP)
 const { envoyerRapport, envoyerRapportChantier } = require('./services/emailService');
+// Service de recherche dans l'annuaire de l'Université de Lorraine
+const { rechercherPersonnesParPoste } = require('./services/annuaire');
 
 // ============================================================
 // Configuration de l'application Express
@@ -277,7 +281,7 @@ app.use('/public', express.static(path.join(__dirname, 'public')));
 
 // POST /api/interventions — Créer une nouvelle intervention
 // Body attendu (JSON) : { type, description, localisation, urgence, ... }
-app.post('/api/interventions', (req, res) => {
+app.post('/api/interventions', async (req, res) => {
   try {
     // Extraction des données envoyées par l'application mobile
     const fiche = req.body;
@@ -285,6 +289,14 @@ app.post('/api/interventions', (req, res) => {
     // Validation : le champ 'type' est obligatoire
     if (!fiche || !fiche.type) {
       return res.status(400).json({ erreur: 'Données d\'intervention invalides' });
+    }
+
+    // Enrichissement : si un poste est fourni sans nom, on tente de résoudre
+    // le nom via l'annuaire UL (uniquement si un seul résultat, pour éviter
+    // d'enregistrer un mauvais nom quand plusieurs personnes partagent le poste).
+    if (fiche.telephone && !fiche.personne) {
+      const personnes = await rechercherPersonnesParPoste(fiche.telephone);
+      if (personnes.length === 1) fiche.personne = personnes[0];
     }
 
     // Insertion dans la base de données SQLite
@@ -304,10 +316,14 @@ app.post('/api/interventions', (req, res) => {
 });
 
 // Endpoint GET pour récupérer toutes les interventions
+// ?abyla=XXXX → filtre sur le numéro de pièce (historique d'une pièce)
 app.get('/api/interventions', (req, res) => {
   try {
-    // Récupération de toutes les interventions depuis la base
-    const interventions = recupererToutesInterventions();
+    const { abyla } = req.query;
+    // Si un numéro Abyla est fourni, on renvoie l'historique de la pièce
+    const interventions = abyla
+      ? recupererInterventionsParAbyla(String(abyla))
+      : recupererToutesInterventions();
     // Retourne la liste (peut être vide)
     res.json(interventions);
   } catch (erreur) {
@@ -339,7 +355,7 @@ app.get('/api/interventions/:id', (req, res) => {
 });
 
 // Endpoint PUT pour modifier une intervention existante
-app.put('/api/interventions/:id', (req, res) => {
+app.put('/api/interventions/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     const fiche = req.body;
@@ -355,6 +371,12 @@ app.put('/api/interventions/:id', (req, res) => {
       return res.status(404).json({ erreur: 'Intervention non trouvée' });
     }
 
+    // Enrichissement : résolution du nom via l'annuaire UL si absent
+    if (fiche.telephone && !fiche.personne) {
+      const personnes = await rechercherPersonnesParPoste(fiche.telephone);
+      if (personnes.length === 1) fiche.personne = personnes[0];
+    }
+
     // Modification de l'intervention
     const modifie = modifierIntervention(id, fiche);
 
@@ -368,6 +390,31 @@ app.put('/api/interventions/:id', (req, res) => {
     log('PUT', `/api/interventions/${id}`, '✏️', `Intervention #${id} modifiée`);
   } catch (erreur) {
     console.error('Erreur lors de la modification :', erreur);
+    res.status(500).json({ erreur: 'Erreur interne du serveur' });
+  }
+});
+
+// Endpoint PATCH pour mettre à jour le numéro Abyla (pièce) d'une intervention
+app.patch('/api/interventions/:id/abyla', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const { abyla } = req.body || {};
+
+    // Vérification que l'intervention existe
+    const existante = recupererInterventionParId(id);
+    if (!existante) {
+      return res.status(404).json({ erreur: 'Intervention non trouvée' });
+    }
+
+    // Mise à jour du seul champ abyla
+    mettreAJourAbyla(id, abyla);
+
+    // Relecture et retour de l'intervention mise à jour
+    const interventionModifiee = recupererInterventionParId(id);
+    res.json(interventionModifiee);
+    log('PATCH', `/api/interventions/${id}/abyla`, '🚪', `Pièce n° ${abyla || '(vide)'} (intervention #${id})`);
+  } catch (erreur) {
+    console.error('Erreur lors de la mise à jour Abyla :', erreur);
     res.status(500).json({ erreur: 'Erreur interne du serveur' });
   }
 });
@@ -1017,6 +1064,27 @@ app.post('/api/produits/barcode/:code', (req, res) => {
     res.json({ nom, reference: reference || '' });
   } catch (erreur) {
     res.status(500).json({ erreur: 'Erreur lors de la sauvegarde du produit' });
+  }
+});
+
+// ============================================================
+// Routes : Annuaire de l'Université de Lorraine
+// ============================================================
+
+// GET /api/annuaire/:poste — Recherche le nom associé à un poste (5 chiffres)
+app.get('/api/annuaire/:poste', async (req, res) => {
+  try {
+    const poste = req.params.poste;
+    if (!/^45\d{3}$/.test(poste)) {
+      return res.status(400).json({ erreur: 'Poste invalide (5 chiffres attendus, ex. 45043)' });
+    }
+
+    const personnes = await rechercherPersonnesParPoste(poste);
+    res.json({ trouve: personnes.length > 0, personnes });
+    log('GET', `/api/annuaire/${poste}`, '📇', personnes.length ? personnes.join(', ') : 'Aucun résultat');
+  } catch (erreur) {
+    console.error('Erreur annuaire :', erreur);
+    res.status(500).json({ erreur: 'Erreur lors de la recherche dans l\'annuaire' });
   }
 });
 

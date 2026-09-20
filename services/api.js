@@ -108,6 +108,30 @@ export async function terminerIntervention(id, resolution) {
   }
 }
 
+// Met à jour uniquement le numéro Abyla (pièce) d'une intervention
+export async function modifierAbyla(id, abyla) {
+  try {
+    const response = await authFetch(`${BASE_URL}/api/interventions/${id}/abyla`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ abyla }),
+    });
+    return await handleResponse(response);
+  } catch (erreur) {
+    throw new Error(`Impossible de mettre à jour le numéro de pièce: ${erreur.message}`);
+  }
+}
+
+// Récupère l'historique des interventions liées à une pièce (numéro Abyla)
+export async function recupererInterventionsParAbyla(abyla) {
+  try {
+    const response = await authFetch(`${BASE_URL}/api/interventions?abyla=${encodeURIComponent(abyla)}`);
+    return await handleResponse(response);
+  } catch (erreur) {
+    throw new Error(`Impossible de récupérer l'historique de la pièce: ${erreur.message}`);
+  }
+}
+
 // Supprime une intervention par son ID
 export async function supprimerIntervention(id) {
   try {
@@ -175,6 +199,17 @@ export async function recupererStatutAccuse(type, refId) {
     return await handleResponse(response);
   } catch (erreur) {
     return { existe: false };
+  }
+}
+
+// Recherche le nom associé à un poste téléphonique dans l'annuaire UL
+// Retourne { trouve, personnes: [...] }
+export async function rechercherAnnuaireParPoste(poste) {
+  try {
+    const response = await authFetch(`${BASE_URL}/api/annuaire/${poste}`);
+    return await handleResponse(response);
+  } catch (erreur) {
+    return { trouve: false, personnes: [] };
   }
 }
 

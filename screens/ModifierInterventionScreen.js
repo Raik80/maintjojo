@@ -2,7 +2,7 @@ import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
 import { useState } from 'react';
 import { analyserIntervention } from '../services/analyseIntervention';
-import { modifierIntervention } from '../services/api';
+import { modifierIntervention, rechercherAnnuaireParPoste } from '../services/api';
 import { COLORS, SPACING, RADIUS, SHADOWS } from '../theme';
 
 export default function ModifierInterventionScreen({ route, navigation }) {
@@ -11,13 +11,40 @@ export default function ModifierInterventionScreen({ route, navigation }) {
   const [resultat, setResultat] = useState({
     type: intervention.type, batiment: intervention.batiment,
     etage: intervention.etage, entree: intervention.entree,
+    telephone: intervention.telephone || '',
+    personne: intervention.personne || '',
   });
   const [sauvegarde, setSauvegarde] = useState({ enCours: false, erreur: null });
+  const [optionsPersonne, setOptionsPersonne] = useState([]);
+  const [recherchePersonne, setRecherchePersonne] = useState(false);
 
-  function handleReanalyser() {
+  async function handleReanalyser() {
     if (nouveauTexte.trim() === '') return;
     const fiche = analyserIntervention(nouveauTexte);
-    setResultat({ type: fiche.type, batiment: fiche.batiment, etage: fiche.etage, entree: fiche.entree });
+    const telephone = fiche.telephone || '';
+    // Le nom est conservé seulement si le poste n'a pas changé
+    const personne = telephone && telephone === resultat.telephone ? resultat.personne : '';
+
+    setResultat({
+      type: fiche.type, batiment: fiche.batiment, etage: fiche.etage, entree: fiche.entree,
+      telephone, personne,
+    });
+    setOptionsPersonne([]);
+
+    // Recherche du nom dans l'annuaire UL (uniquement au clic sur Ré-analyser)
+    if (telephone && !personne) {
+      setRecherchePersonne(true);
+      try {
+        const { personnes } = await rechercherAnnuaireParPoste(telephone);
+        if (personnes.length === 1) {
+          setResultat(prev => ({ ...prev, personne: personnes[0] }));
+        } else if (personnes.length > 1) {
+          setOptionsPersonne(personnes);
+        }
+      } finally {
+        setRecherchePersonne(false);
+      }
+    }
   }
 
   async function handleEnregistrerModifications() {
@@ -27,6 +54,8 @@ export default function ModifierInterventionScreen({ route, navigation }) {
       await modifierIntervention(intervention.id, {
         type: resultat.type, batiment: resultat.batiment,
         etage: resultat.etage, entree: resultat.entree,
+        telephone: resultat.telephone,
+        personne: resultat.personne,
         description: nouveauTexte.trim(),
       });
       navigation.reset({ index: 1, routes: [{ name: 'Accueil' }, { name: 'ListeInterventions' }] });
@@ -79,6 +108,34 @@ export default function ModifierInterventionScreen({ route, navigation }) {
             </View>
           </>
         )}
+        {resultat.type === 'Téléphonie' && (
+          <>
+            <View style={styles.divider} />
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>Téléphone</Text>
+              <Text style={styles.fieldValue}>{resultat.telephone || 'Non spécifié'}</Text>
+            </View>
+            <View style={styles.divider} />
+            <View style={styles.field}>
+              <Text style={styles.fieldLabel}>Nom</Text>
+              {recherchePersonne ? (
+                <Text style={styles.fieldValue}>Recherche…</Text>
+              ) : resultat.personne ? (
+                <Text style={styles.fieldValue}>{resultat.personne}</Text>
+              ) : optionsPersonne.length > 1 ? (
+                <View style={styles.choixWrap}>
+                  {optionsPersonne.map((nom) => (
+                    <TouchableOpacity key={nom} style={styles.choixBtn} onPress={() => { setResultat(prev => ({ ...prev, personne: nom })); setOptionsPersonne([]); }}>
+                      <Text style={styles.choixText}>{nom}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              ) : (
+                <Text style={styles.fieldValue}>Non spécifié</Text>
+              )}
+            </View>
+          </>
+        )}
       </View>
 
       <TouchableOpacity
@@ -125,6 +182,9 @@ const styles = StyleSheet.create({
   field: { paddingVertical: SPACING.sm },
   fieldLabel: { color: COLORS.textDim, fontSize: 12, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1 },
   fieldValue: { color: COLORS.text, fontSize: 16, fontWeight: '700', marginTop: 3 },
+  choixWrap: { marginTop: SPACING.sm, gap: SPACING.sm },
+  choixBtn: { paddingVertical: 10, paddingHorizontal: SPACING.lg, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.gold, alignSelf: 'flex-start' },
+  choixText: { color: COLORS.gold, fontSize: 15, fontWeight: '700' },
   divider: { height: 1, backgroundColor: COLORS.cardBorder, marginVertical: SPACING.xs },
   button: {
     backgroundColor: COLORS.gold, paddingVertical: 15, paddingHorizontal: 40,

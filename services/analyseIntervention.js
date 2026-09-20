@@ -1,16 +1,29 @@
+// ============================================================
+// Analyse d'une description d'intervention
+// ------------------------------------------------------------
+// Extrait automatiquement le type, l'étage, le bâtiment,
+// l'entrée et le poste téléphonique à partir du texte saisi.
+//
+// Toute l'analyse s'appuie sur une normalisation préalable
+// (minuscules, sans accents, séparateurs uniformisés) pour être
+// robuste aux différentes façons d'écrire (3ème / 3eme / 3e...).
+// ============================================================
+
 // Liste des types d'intervention possibles avec leurs mots-clés associés
-// Attention : les types les plus spécifiques doivent être en premier pour éviter les faux positifs
+// (mots-clés normalisés : minuscules, sans accent).
+// Attention : les types les plus spécifiques doivent être en premier.
 const TYPES_INTERVENTION = [
   { id: 'Disjonction prises', motsCles: ['disjonction prise', 'disjonction prises'] },
-  { id: 'Disjonction éclairage', motsCles: ['disjonction éclairage', 'disjonction eclairage', 'disjonction lumière', 'disjonction lumiere'] },
-  { id: 'Disjonction', motsCles: ['disjonction', 'disjoncteur', 'disjoncte'] },
-  { id: 'Prise RJ45', motsCles: ['prise rj45', 'rj45', 'réseau', 'reseau', 'ethernet', 'internet'] },
-  { id: 'Contrôle d\'accès', motsCles: ['contrôle d\'accès', 'contrôle d accès', 'controle d\'acces', 'controle d acces', 'badge', 'badges', 'portier', 'interphone', 'lecteur', 'uca', 'interphase ip', 'interface ip'] },
-  { id: 'Lumière', motsCles: ['lumiere', 'lumières', 'lumière', 'lampes', 'lampe', 'éclairage', 'eclairage', 'néon', 'neon', 'pavé led', 'pave led', 'spots', 'downlight', 'ballast', 'radar', 'interrupteur', 'télérupteur', 'telerupteur', 'bouton', 'bouton poussoir', 'bouton poussoire'] },
-  { id: 'Prises', motsCles: ['prise', 'prises'] },
+  { id: 'Disjonction éclairage', motsCles: ['disjonction eclairage', 'disjonction lumiere'] },
+  { id: 'Disjonction', motsCles: ['disjonct'] },
+  { id: 'Prise RJ45', motsCles: ['rj45', 'reseau', 'ethernet', 'internet'] },
+  { id: 'Contrôle d\'accès', motsCles: ['controle d acces', 'controle dacces', 'badge', 'portier', 'interphone', 'lecteur', 'uca', 'interface ip'] },
+  { id: 'Lumière', motsCles: ['lumiere', 'lampe', 'eclairage', 'neon', 'pave led', 'spot', 'downlight', 'ballast', 'radar', 'interrupteur', 'telerupteur', 'bouton'] },
+  { id: 'Prises', motsCles: ['prise'] },
+  { id: 'Téléphonie', motsCles: ['telephon', 'sip', 'numeriqu', 'poste numerique', 'poste sip', 'anomal', 'annomal'] },
 ];
 
-// Liste des bâtiments avec leurs alias et entrées associées
+// Liste des bâtiments et de leurs entrées associées
 const BATIMENTS = [
   { id: 'AIP' },
   { id: 'Atela' },
@@ -26,199 +39,205 @@ const BATIMENTS = [
   { id: 'Magasin Central' },
 ];
 
-// Fonction pour détecter le type d'intervention à partir du texte
-function extraireType(texte) {
-  // Mise en minuscule du texte pour une comparaison insensible à la casse
-  const texteBas = texte.toLowerCase();
+// Normalise un texte pour rendre l'analyse robuste :
+// - minuscules
+// - suppression des accents (é → e, è → e, à → a, ç → c...)
+// - apostrophes / underscores → espaces
+// - tirets entre lettres → espaces (rez-de-chaussée → rez de chaussee)
+//   tout en conservant les tirets des nombres négatifs (-1)
+// - espaces multiples compressés
+function normaliser(texte) {
+  return texte
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/['’`_]/g, ' ')
+    .replace(/([a-z])-([a-z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
-  // Parcours de tous les types disponibles
+// Teste la présence d'un mot-clé dans un texte déjà normalisé.
+// - un mot-clé court (<= 4 caractères, ex. "sip", "rj45") doit être un mot entier
+// - un mot-clé plus long est cherché en début de mot (racine : "telephon" → téléphone, téléphonie)
+// - un mot-clé contenant un espace est cherché comme expression
+function motCorrespond(texteNorm, mot) {
+  if (mot.includes(' ')) {
+    return texteNorm.includes(mot);
+  }
+  const echappe = mot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (mot.length <= 4) {
+    return new RegExp(`\\b${echappe}\\b`).test(texteNorm);
+  }
+  return new RegExp(`\\b${echappe}`).test(texteNorm);
+}
+
+// Détecte le type d'intervention à partir du texte
+function extraireType(texteNorm) {
   for (const type of TYPES_INTERVENTION) {
-    // Vérifie si l'un des mots-clés du type est présent dans le texte
-    const trouve = type.motsCles.some(mot => texteBas.includes(mot));
-    if (trouve) {
-      return type.id; // Retourne l'identifiant du type trouvé
+    if (type.motsCles.some(mot => motCorrespond(texteNorm, mot))) {
+      return type.id;
+    }
+  }
+  return 'Non spécifié';
+}
+
+// Détecte l'étage à partir du texte (texte déjà normalisé)
+function extraireEtage(texteNorm) {
+  const t = texteNorm;
+
+  // Rez-de-jardin (à tester avant RDC car "rez" est commun aux deux)
+  if (/\brdj\b/.test(t) || /rez de jardin/.test(t)) return 'RDJ';
+
+  // Rez-de-chaussée
+  if (/\brdc\b/.test(t) || /rez de chaussee/.test(t) || /\brez\b/.test(t)) return 'RDC';
+
+  // Niveaux particuliers
+  if (/mezzanine/.test(t)) return 'Mezzanine';
+  if (/entresol/.test(t)) return 'Entresol';
+
+  // Sous-sol avec numéro : "sous sol 1", "S1"
+  const sousSolNum = t.match(/sous sol\s*(\d+)/) || t.match(/\bs\s?(\d+)\b/);
+  if (sousSolNum) return `Sous-sol ${sousSolNum[1]}`;
+  if (/sous sol/.test(t) || /\bss\b/.test(t)) return 'Sous-sol';
+
+  // Niveau négatif : "-1", "niveau -1"
+  const negatif = t.match(/(?:niveau\s*)?-\s*(\d+)/);
+  if (negatif) return `Sous-sol ${negatif[1]}`;
+
+  // "R+1", "R+2" → étage 1, 2
+  const rplus = t.match(/\br\s*\+\s*(\d+)/);
+  if (rplus) return rplus[1];
+
+  // "étage 3", "niveau 3", "étage n3"
+  const apres = t.match(/(?:etage|niveau)\s*(?:n\s*)?(\d+)/);
+  if (apres) return apres[1];
+
+  // "3ème étage", "1er étage", "3e étage", "2nd étage"
+  const ordinal = t.match(/(\d+)\s*(?:er|ere|eme|ieme|e|nd|nde)?\s*(?:etage|niveau)/);
+  if (ordinal) return ordinal[1];
+
+  // "N3", "N 5"
+  const nSeul = t.match(/\bn\s*(\d+)\b/);
+  if (nSeul) return nSeul[1];
+
+  // Ordinal seul, sans le mot "étage" : "1er", "2eme", "3e"
+  const ordinalSeul = t.match(/\b(\d+)\s*(?:ere|er|ieme|eme|e)\b/);
+  if (ordinalSeul) return ordinalSeul[1];
+
+  // "au 3" (priorité basse)
+  const au = t.match(/\bau\s+(\d+)\b/);
+  if (au) return au[1];
+
+  return 'Non spécifié';
+}
+
+// Détecte le bâtiment à partir du texte (texte déjà normalisé)
+// Les sigles courts sont ancrés par des frontières de mots pour éviter
+// les faux positifs ("bureau" ne doit pas donner BU, "chaussee" ni SSE).
+const ALIAS_BATIMENTS = [
+  { motif: /\bbatiment\s+a\b/, id: 'Bâtiment A' },
+  { motif: /\bbat\s+a\b/, id: 'Bâtiment A' },
+  { motif: /\bbatiment\s+b\b/, id: 'Bâtiment B' },
+  { motif: /\bbat\s+b\b/, id: 'Bâtiment B' },
+  { motif: /\bbatiment\s+c\b/, id: 'Bâtiment C' },
+  { motif: /\bbat\s+c\b/, id: 'Bâtiment C' },
+  { motif: /\baip\b/, id: 'AIP' },
+  { motif: /\batela\b/, id: 'Atela' },
+  { motif: /\besa\b/, id: 'ESA' },
+  { motif: /\bsse\b/, id: 'SSE' },
+  { motif: /\bbu\b/, id: 'BU' },
+  { motif: /\biecl\b/, id: 'IECL' },
+  { motif: /\bcryogenie\b/, id: 'Cryogénie' },
+  { motif: /\b1 cycle\b/, id: '1 cycle' },
+  { motif: /\bpremier cycle\b/, id: '1 cycle' },
+  { motif: /\bmagasin central\b/, id: 'Magasin Central' },
+  { motif: /\bmag central\b/, id: 'Magasin Central' },
+];
+
+function extraireBatiment(texteNorm) {
+  for (const alias of ALIAS_BATIMENTS) {
+    if (alias.motif.test(texteNorm)) {
+      return alias.id;
     }
   }
 
-  return 'Non spécifié'; // Aucun type trouvé
-}
-
-// Fonction pour extraire le numéro d'étage à partir du texte
-function extraireEtage(texte) {
-  // Mise en minuscule du texte
-  const texteBas = texte.toLowerCase();
-
-  // Cherche des motifs comme "étage 3", "etage 1", "rdc", "rez-de-chaussée"
-  const motifs = [
-    { regex: /étage\s*(\d+)/i, index: 1 }, // "étage 2"
-    { regex: /etage\s*(\d+)/i, index: 1 }, // "etage 2" (sans accent)
-    { regex: /niveau\s*(\d+)/i, index: 1 }, // "niveau 3"
-    { regex: /\bn\s*(\d+)\b/i, index: 1 }, // "N3", "N 5"
-    { regex: /\b(\d+)e?\s*étage\b/i, index: 1 }, // "3e étage"
-    { regex: /\b(\d+)e?\s*etage\b/i, index: 1 }, // "3e etage"
-    { regex: /\brdc\b/i, index: 0 }, // "rdc" -> rez-de-chaussée
-    { regex: /rez[\s-]de[\s-]chaussée/i, index: 0 }, // "rez-de-chaussée"
-    { regex: /rez[\s-]de[\s-]chaussee/i, index: 0 }, // "rez-de-chaussee"
-    { regex: /sous[\s-]sol/i, index: 0 }, // "sous-sol"
-  ];
-
-  for (const motif of motifs) {
-    const resultat = texteBas.match(motif.regex);
-    if (resultat) {
-      if (motif.index === 0) {
-        // Mot-clé sans numéro (rdc, sous-sol)
-        if (resultat[0].includes('rdc') || resultat[0].includes('rez')) return 'RDC';
-        if (resultat[0].includes('sous-sol') || resultat[0].includes('sous sol')) return 'Sous-sol';
-      } else {
-        return resultat[motif.index]; // Retourne le numéro trouvé
-      }
-    }
+  // Repli : "bâtiment X" / "bât X" avec un nom non répertorié
+  const generique = texteNorm.match(/\bbatiment\s+([a-z0-9]+)/) || texteNorm.match(/\bbat\s+([a-z0-9]+)/);
+  if (generique) {
+    return generique[1].charAt(0).toUpperCase() + generique[1].slice(1);
   }
 
-  return 'Non spécifié'; // Aucun étage trouvé
+  return 'Non spécifié';
 }
 
-// Fonction pour trouver un bâtiment dans le texte
-function trouverBatimentDansTexte(texteBas) {
-  // Ordre de recherche : on vérifie d'abord les noms composés (plus longs) pour éviter les faux positifs
-  // "1 cycle" doit être testé avant "cycle" seul
-  const ordreRecherche = [
-    { recherche: 'bâtiment a', id: 'Bâtiment A' },
-    { recherche: 'batiment a', id: 'Bâtiment A' },
-    { recherche: 'bât a', id: 'Bâtiment A' },
-    { recherche: 'bat a', id: 'Bâtiment A' },
-    { recherche: 'bâtiment b', id: 'Bâtiment B' },
-    { recherche: 'batiment b', id: 'Bâtiment B' },
-    { recherche: 'bât b', id: 'Bâtiment B' },
-    { recherche: 'bat b', id: 'Bâtiment B' },
-    { recherche: 'bâtiment c', id: 'Bâtiment C' },
-    { recherche: 'batiment c', id: 'Bâtiment C' },
-    { recherche: 'bât c', id: 'Bâtiment C' },
-    { recherche: 'bat c', id: 'Bâtiment C' },
-    { recherche: 'aip', id: 'AIP' },
-    { recherche: 'atela', id: 'Atela' },
-    { recherche: 'esa', id: 'ESA' },
-    { recherche: 'sse', id: 'SSE' },
-    { recherche: 'bu', id: 'BU' },
-    { recherche: 'iecl', id: 'IECL' },
-    { recherche: 'cryogénie', id: 'Cryogénie' },
-    { recherche: 'cryogenie', id: 'Cryogénie' },
-    { recherche: '1 cycle', id: '1 cycle' },
-    { recherche: 'premier cycle', id: '1 cycle' },
-    { recherche: 'batiment a', id: 'Bâtiment A' },
-    { recherche: 'batiment b', id: 'Bâtiment B' },
-    { recherche: 'batiment c', id: 'Bâtiment C' },
-    { recherche: 'magasin central', id: 'Magasin Central' },
-    { recherche: 'mag central', id: 'Magasin Central' },
-  ];
-
-  for (const entree of ordreRecherche) {
-    if (texteBas.includes(entree.recherche)) {
-      return entree.id; // Retourne l'identifiant du bâtiment trouvé
-    }
-  }
-
-  return null; // Aucun bâtiment trouvé
-}
-
-// Fonction pour extraire le bâtiment à partir du texte
-function extraireBatiment(texte) {
-  // Mise en minuscule du texte
-  const texteBas = texte.toLowerCase();
-
-  // Cherche aussi les motifs comme "bâtiment X" où X peut être un mot quelconque
-  const motifsRegex = [
-    { regex: /bâtiment\s+(\w+)/i },
-    { regex: /batiment\s+(\w+)/i },
-    { regex: /bât\s+(\w+)/i },
-    { regex: /bat\s+(\w+)/i },
-  ];
-
-  // Priorité à la recherche par nom de bâtiment dans la liste
-  const batimentListe = trouverBatimentDansTexte(texteBas);
-  if (batimentListe) {
-    return batimentListe;
-  }
-
-  // Sinon, on essaie d'extraire par motif générique
-  for (const motif of motifsRegex) {
-    const resultat = texteBas.match(motif.regex);
-    if (resultat) {
-      return resultat[1].charAt(0).toUpperCase() + resultat[1].slice(1); // Retourne avec la première lettre en majuscule
-    }
-  }
-
-  return 'Non spécifié'; // Aucun bâtiment trouvé
-}
-
-// Fonction pour extraire l'entrée à partir du texte et du bâtiment trouvé
-function extraireEntree(texte, batiment) {
-  // Mise en minuscule du texte
-  const texteBas = texte.toLowerCase();
-
-  // Liste des codes d'entrée possibles selon le bâtiment
-  let codesEntrees = [];
-
-  // Recherche du bâtiment dans la liste pour récupérer ses entrées associées
+// Détecte l'entrée à partir du texte normalisé et du bâtiment trouvé
+function extraireEntree(texteNorm, batiment) {
+  // Récupère les entrées connues du bâtiment (ex. Bâtiment A → 1A, 2A...)
   const batimentTrouve = BATIMENTS.find(b => b.id === batiment);
-  if (batimentTrouve && batimentTrouve.entrees) {
-    codesEntrees = batimentTrouve.entrees;
-  }
+  const codesEntrees = batimentTrouve && batimentTrouve.entrees ? batimentTrouve.entrees : [];
 
-  // Cherche des motifs comme "entrée 1A", "entree 2B", ou directement "1A", "2A"
   if (codesEntrees.length > 0) {
-    // Parcourt les codes d'entrée valides pour ce bâtiment
     for (const code of codesEntrees) {
-      // Cherche "entrée X", "entree X", "porte X", ou juste le code
-      const regexEntree = new RegExp(`(entrée\\s*${code}|entree\\s*${code}|porte\\s*${code}|\\b${code}\\b)`, 'i');
-      if (regexEntree.test(texteBas)) {
-        return code; // Retourne le code d'entrée trouvé
+      const codeMin = code.toLowerCase();
+      const regexEntree = new RegExp(`(entree\\s*${codeMin}|porte\\s*${codeMin}|\\b${codeMin}\\b)`, 'i');
+      if (regexEntree.test(texteNorm)) {
+        return code;
       }
     }
   } else {
-    // Pour les bâtiments sans entrée définie, cherche quand même un code générique comme "entrée 1" ou "entrée A"
-    const motifs = [
-      { regex: /entrée\s*(\d+[a-z]?)/i, index: 1 },
-      { regex: /entree\s*(\d+[a-z]?)/i, index: 1 },
-      { regex: /porte\s*(\d+[a-z]?)/i, index: 1 },
-    ];
-
-    for (const motif of motifs) {
-      const resultat = texteBas.match(motif.regex);
-      if (resultat) {
-        return resultat[motif.index].toUpperCase();
-      }
+    // Bâtiment sans entrée définie : cherche un code générique "entrée 1" / "porte A"
+    const generique = texteNorm.match(/(?:entree|porte)\s*(\d+[a-z]?|[a-z])/);
+    if (generique) {
+      return generique[1].toUpperCase();
     }
   }
 
-  return 'Non spécifié'; // Aucune entrée trouvée
+  return 'Non spécifié';
 }
 
-// Fonction principale qui analyse le texte et retourne un objet structuré
+// Détecte le numéro de poste téléphonique (extension 45xxx, ex. "45043")
+function extraireTelephone(texteNorm) {
+  const resultat = texteNorm.match(/\b45\d{3}\b/);
+  return resultat ? resultat[0] : '';
+}
+
+// Fonction principale : analyse le texte et retourne un objet structuré
 export function analyserIntervention(texte) {
-  // Vérification que le texte n'est pas vide
   if (!texte || texte.trim() === '') {
     return {
       type: 'Non spécifié',
       etage: 'Non spécifié',
       batiment: 'Non spécifié',
       entree: 'Non spécifié',
-      description: '', // Texte original vide
+      telephone: '',
+      description: '',
     };
   }
 
-  // Extraction de chaque information
-  const type = extraireType(texte);
-  const etage = extraireEtage(texte);
-  const batiment = extraireBatiment(texte);
-  const entree = extraireEntree(texte, batiment);
+  const texteNorm = normaliser(texte);
 
-  // Retourne l'objet structuré avec toutes les infos extraites
+  const typeDetecte = extraireType(texteNorm);
+  const etage = extraireEtage(texteNorm);
+  const batiment = extraireBatiment(texteNorm);
+  const entree = extraireEntree(texteNorm, batiment);
+  const telephoneDetecte = extraireTelephone(texteNorm);
+
+  // Un poste 45xxx sur une description sans type précis → intervention téléphonique
+  let type = typeDetecte;
+  if (telephoneDetecte && type === 'Non spécifié') {
+    type = 'Téléphonie';
+  }
+
+  // Le téléphone n'est conservé que pour les interventions téléphoniques
+  const telephone = type === 'Téléphonie' ? telephoneDetecte : '';
+
   return {
     type,
     etage,
     batiment,
     entree,
-    description: texte.trim(), // On garde le texte original complet
+    telephone,
+    description: texte.trim(),
   };
 }
